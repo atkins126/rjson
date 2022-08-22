@@ -7,7 +7,6 @@
    Github: github.com/itsmeriza
    Twitter: @RizaAnshari
    Email: rizast@gmail.com
-
    License: MIT License
 
    Copyright (c) 2022 Riza Anshari
@@ -75,6 +74,7 @@ type
     class function ChangeDecimalSeparator(StringFloat: string; DecimalSeparator: Char): string;
     class function FloatToStr(Float: Extended; DecimalSeparator: Char = '.'): string;
     class function StrToFloat(StringFloat: string; DecimalSeparator: Char = '.'): Extended;
+    class function StrToFloatDef(StringFloat: string; Default: Extended = 0; DecimalSeparator: Char = '.'): Extended;
   end;
 
   TRJSON = class(TPersistent)
@@ -84,9 +84,11 @@ type
     class procedure DoProcessObject(Instance: TObject; JSON: string);
     class procedure DoProcessArray(Instance: TObject; V: PValue);
   public
-    class procedure ToObject(Instance: TPersistent; const JSON: string);
+    class procedure ToObject(Instance: TObject; const JSON: string); 
     class function ToJSON(Instance: TObject; Option: TRJSONOption = joAssociate): string; overload; virtual;
-    function ToJSON(AJSONOption: TRJSONOption = joIndexed): string; overload;
+    function ToJSON(AJSONOption: TRJSONOption = joAssociate): string; overload;
+    class procedure Clone(Dest, Source: TObject); overload;
+    procedure Clone(Dest: TObject); overload;
   end;
 
   TRJSONListHelper = class(TRJSON)
@@ -106,37 +108,44 @@ type
     property Value: Boolean read fValue write fValue;
   end;
 
+  TRJSONStringHelper = class(TRJSON)
+  private
+    fValue: string;
+  published
+    property Value: string read fValue write fValue;
+  end;
+
+  TRJSONDoubleHelper = class(TRJSON)
+  private
+    fValue: Double;
+  published
+    property Value: Double read fValue write fValue;
+  end;
+
 implementation
 
 { TRJSON }
 
 class function TRJSON.GetValue(Value: string): PValue;
 var
-  tokens: TStringList;
-  v: string;
   c: Char;
+  p: Integer;
 begin
   New(Result);
-  tokens := TStringList.Create;
-  try
-    TRJSONHelper.JSONSplit(tokens, Value, ':');
-    v := Trim(tokens[1]);
-    c := PChar(v)[0];
 
-    Result^.name := tokens[0];
-    Result^.value := tokens[1];
-    if LowerCase(v) = 'null' then
-      Result^.vtype := vtNull
-    else if c = BRACKET_OPEN then
-      Result^.vtype := vtArray
-    else if c = BRACKET_CURLY_OPEN then
-      Result^.vtype := vtObject
-    else begin
-      Result^.vtype := vtPrimitive;
-    end;
-  finally
-    tokens.Free;
-  end;
+  p := Pos(':', Value);
+  Result^.name := Copy(Value, 1, p-1);
+  Result^.value := Copy(Value, p+1, Length(Value));
+  c := PChar(Result^.value)[0];
+
+  if LowerCase(Result^.value) = 'null' then
+    Result^.vtype := vtNull
+  else if c = BRACKET_OPEN then
+    Result^.vtype := vtArray
+  else if c = BRACKET_CURLY_OPEN then
+    Result^.vtype := vtObject
+  else
+    Result^.vtype := vtPrimitive;
 end;
 
 class procedure TRJSON.DoProcessObject(Instance: TObject; JSON: string);
@@ -158,35 +167,40 @@ begin
       token := tokens[i];
       v := GetValue(token);
       try
-      if v^.vtype = vtPrimitive then
-      begin
-        p := Copy(v^.name, 2, Length(v^.name)-2);
-        try
-          propInfo := GetPropInfo(Instance, p);
-          if propInfo <> nil then
-          begin
-            value := TRJSONHelper.Unescape(TRJSONHelper.Trim(v^.value, ['"']));
-            if propInfo^.PropType^.Name = 'Boolean' then
-              value := TRJSONHelper.StrToBool(v^.value)
-            else if propInfo^.PropType^.Name = 'TDateTime' then
-              value := UnixToDateTime(StrToIntDef(value, 0))
-            else if ((propInfo^.PropType^.Name = 'String') or (propInfo^.PropType^.Name = 'AnsiString')) and (value = 'null') then
-                value := '';
+        if v^.vtype = vtPrimitive then
+        begin
+          p := Copy(v^.name, 2, Length(v^.name)-2);
+          try
+            propInfo := GetPropInfo(Instance, p);
+            if propInfo <> nil then
+            begin
+              value := TRJSONHelper.Unescape(TRJSONHelper.Trim(v^.value, ['"']));
+              if propInfo^.PropType^.Name = 'Boolean' then
+                value := TRJSONHelper.StrToBool(value)
+              else if propInfo^.PropType^.Name = 'Double' then
+                value := TRJSONHelper.StrToFloatDef(value)
+              else if (propInfo^.PropType^.Name = 'SmallInt') or (propInfo^.PropType^.Name = 'Integer')
+                or (propInfo^.PropType^.Name = 'LargeInt') then
+                value := StrToIntDef(value, 0)
+              else if propInfo^.PropType^.Name = 'TDateTime' then
+                value := UnixToDateTime(StrToIntDef(value, 0))
+              else if ((propInfo^.PropType^.Name = 'String') or (propInfo^.PropType^.Name = 'AnsiString')) and (value = 'null') then
+                  value := '';
 
-            SetPropValue(Instance, p, value);
+              SetPropValue(Instance, p, value);
+            end;
+          except
           end;
-        except
-        end;
-      end
-      else if v^.vtype = vtObject then
-      begin
-        v^.name := TRJSONHelper.Trim(v^.name, ['"']);
-        o := GetObjectProp(Instance, v^.name);
-        if o <> nil then
-          DoProcessObject(o, v^.value);
-      end
-      else if v^.vtype = vtArray then
-        DoProcessArray(Instance, v);
+        end
+        else if v^.vtype = vtObject then
+        begin
+          v^.name := TRJSONHelper.Trim(v^.name, ['"']);
+          o := GetObjectProp(Instance, v^.name);
+          if o <> nil then
+            DoProcessObject(o, v^.value);
+        end
+        else if v^.vtype = vtArray then
+          DoProcessArray(Instance, v);
       finally
         Dispose(v);
       end;
@@ -196,7 +210,7 @@ begin
   end;
 end;
 
-class procedure TRJSON.ToObject(Instance: TPersistent; const JSON: string);
+class procedure TRJSON.ToObject(Instance: TObject; const JSON: string);
 begin
   DoProcessObject(Instance, JSON);
 end;
@@ -259,7 +273,7 @@ begin
   try
     for i := 0 to count - 1 do
     begin
-      propInfo := list[i];
+      propInfo := list^[i];
       if (propInfo^.PropType^.Name = 'TCollection') then
       begin
         objCollection:= TCollection(GetObjectProp(AObject, propInfo^.Name));
@@ -301,7 +315,7 @@ begin
 
         for ii := 0 to objList.Count - 1 do
         begin
-          o := objList.Items[ii];
+          o := TObject(objList[ii]);
           Result := Result + DoToJSON(o, AJSONOption);
         end;
 
@@ -361,6 +375,28 @@ class function TRJSON.ToJSON(Instance: TObject;
 begin
   Result := DoToJSON(Instance, Option);
   Result := Copy(Result, 1, Length(Result) - 1);
+end;
+
+class procedure TRJSON.Clone(Dest, Source: TObject);
+var
+  count: Integer;
+  list: PPropList;
+  i: Integer;
+  pi: PPropInfo;
+  v: Variant;
+begin
+  count := GetPropList(Source, list);
+  for i := 0 to count - 1 do
+  begin
+    pi := list^[i];
+    v := GetPropValue(Source, pi^.Name);
+    SetPropValue(Dest, pi^.Name, v);
+  end;
+end;
+
+procedure TRJSON.Clone(Dest: TObject);
+begin
+  TRJSON.Clone(Dest, Self);
 end;
 
 { TRJSONHelper }
@@ -479,6 +515,7 @@ var
   c, cc: Char;
   isIllegal: Boolean;
 begin
+  Result := '';
   l := Length(s);
   cc := #0;
   for i := 0 to l - 1 do
@@ -491,7 +528,8 @@ begin
       Break;
   end;
 
-  Result := Copy(s, i+1, l);
+  if (i <= l-1) then
+    Result := Copy(s, i+1, l);
 end;
 
 class function TRJSONHelper.TrimRight(s: string;
@@ -501,7 +539,7 @@ var
   c, cc: Char;
   isIllegal: Boolean;
 begin
-  Result := s;
+  Result := '';
   l := Length(s);
   cc := #0;
   for i := l - 1 downto 0 do
@@ -514,7 +552,8 @@ begin
       Break;
   end;
 
-  Result := Copy(s, 1, i+1);
+  if (i >= 0) and not (c in illegalChars) then
+    Result := Copy(s, 1, i+1);
 end;
 
 class function TRJSONHelper.Underscored(ACammelCaseString: string): string;
@@ -716,6 +755,13 @@ class function TRJSONHelper.StrToFloat(StringFloat: string;
 begin
   StringFloat := TRJSONHelper.ChangeDecimalSeparator(StringFloat, DecimalSeparator);
   Result := SysUtils.StrToFloat(StringFloat);
+end;
+
+class function TRJSONHelper.StrToFloatDef(StringFloat: string;
+  Default: Extended; DecimalSeparator: Char): Extended;
+begin
+  StringFloat:= TRJSONHelper.ChangeDecimalSeparator(StringFloat, DecimalSeparator);
+  Result:= SysUtils.StrToFloatDef(StringFloat, Default);
 end;
 
 { TRJSONListHelper }
